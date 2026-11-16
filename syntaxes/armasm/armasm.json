@@ -1,0 +1,17 @@
+{
+  "name": "ARMASM",
+  "version": "6.14",
+  "architecture": "arm",
+  "author": "PandaIDE",
+  "description": "ARM Assembler - ARM Architecture",
+  "fileExtensions": [".s", ".S", ".asm"],
+  "extensions": {
+    "directives": ["AREA", "CODE", "DATA", "IMPORT", "EXPORT", "CSEG", "DSEG", "GLOBAL", "WEAK", "ALIGN"],
+    "instructions": ["MOV", "ADD", "SUB", "MUL", "DIV", "ORR", "AND", "BIC", "LDR", "STR", "MOVW", "MOVT", "MSR", "MRS", "SWI", "SVC"],
+    "registers": ["r0-r15", "r13_sp", "r14_lr", "r15_pc", "cpsr", "spsr"],
+    "modes": ["arm", "thumb", "thumb2"]
+  },
+  "comment": ";",
+  "string": "\"",
+  "number": "#"
+}

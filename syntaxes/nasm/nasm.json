@@ -1,0 +1,16 @@
+{
+  "name": "NASM",
+  "version": "2.16.01",
+  "architecture": "x86-64",
+  "author": "PandaIDE",
+  "description": "Netwide Assembler - Intel syntax variant",
+  "fileExtensions": [".asm", ".s"],
+  "extensions": {
+    "directives": ["section", "default", "bits", "cpu", "equ", "global", "extern"],
+    "instructions": ["mov", "add", "sub", "xor", "and", "or", "not", "push", "pop", "call", "ret", "jmp", "je", "jg", "jl", "int", "iret"],
+    "registers": ["rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "rip", "eax", "ebx", "ecx", "edx", "esi", "edi", "esp", "ah", "al", "bx", "bl", "cx", "cl", "dx", "dl"]
+  },
+  "comment": ";",
+  "string": "\"",
+  "number": "$"
+}

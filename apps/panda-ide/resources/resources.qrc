@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="main.qml">../src/qml/main.qml</file>
+        <file alias="PandaTheme.qml">../src/qml/PandaTheme.qml</file>
+    </qresource>
+</RCC>

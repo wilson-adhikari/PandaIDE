@@ -1,0 +1,46 @@
+# CMake output directories (never commit build trees).
+# NOTE: the IDE's own build-system *sources* live in build_system/,
+# not here.
+build/
+out/
+install/
+
+# CMake generated files (including accidental in-source configures)
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+
+# Compiled objects / binaries
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.exe
+*.pdb
+
+# Qt generated files
+*_autogen/
+moc_*.cpp
+moc_*.h
+qrc_*.cpp
+ui_*.h
+*.qm
+
+# IDE / editor clutter
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.user
+*.suo
+*.sdf
+.DS_Store
+Thumbs.db
+.gitattributes
+.gitignore

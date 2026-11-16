@@ -1,0 +1,17 @@
+{
+  "name": "MASM",
+  "version": "16.0",
+  "architecture": "x86",
+  "author": "PandaIDE",
+  "description": "Microsoft Macro Assembler - x86/x64",
+  "fileExtensions": [".asm", ".asmx", ".s"],
+  "extensions": {
+    "directives": [".MODEL", ".STACK", ".DATA", ".CODE", "ASSUME", ".STARTUP", ".EXIT"],
+    "instructions": ["mov", "add", "sub", "xor", "and", "or", "not", "push", "pop", "call", "ret", "jmp", "je", "jg", "jl", "int 21h", "iret"],
+    "registers": ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "ax", "bx", "cx", "dx", "ah", "al", "f0-f7", "st0-st7"],
+    "directives_start": [".MODEL", ".STACK", ".DATA", ".CODE"]
+  },
+  "comment": ";",
+  "string": "\"",
+  "number": "$"
+}

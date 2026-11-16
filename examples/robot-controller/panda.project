@@ -1,0 +1,29 @@
+{
+  "name": "RobotController",
+  "languages": ["cpp", "assembly"],
+  "toolchains": {
+    "cpp": "clang",
+    "assembly": "uace"
+  },
+  "targets": ["x86_64"],
+  "buildConfigurations": {
+    "default": {
+      "compiler": "clang++",
+      "uaceSyntax": "intel",
+      "optimization": "O2",
+      "debugSymbols": true
+    }
+  },
+  "runConfigurations": {
+    "default": {
+      "output": "robot.exe",
+      "args": []
+    }
+  },
+  "debugConfigurations": {
+    "default": {
+      "debugger": "lldb",
+      "stopOnEntry": false
+    }
+  }
+}

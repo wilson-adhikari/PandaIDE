@@ -1,0 +1,17 @@
+{
+  "name": "GAS",
+  "version": "2.35",
+  "architecture": "x86-64",
+  "author": "PandaIDE",
+  "description": "GNU Assembler - supports multiple syntaxes",
+  "fileExtensions": [".s", ".S"],
+  "extensions": {
+    "directives": [".file", ".section", ".globl", ".type", ".size", ".int", ".long", ".quad"],
+    "instructions": ["mov", "add", "sub", "xor", "and", "or", "not", "push", "pop", "call", "ret", "jmp", "je", "jg", "jl"],
+    "syntax_variant": "att_or_intel",
+    "registers": ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "xmm0-xmm7"]
+  },
+  "comment": ".",
+  "string": "\"",
+  "number": "$"
+}

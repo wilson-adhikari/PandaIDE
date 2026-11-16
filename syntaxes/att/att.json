@@ -1,0 +1,17 @@
+{
+  "name": "AT&T",
+  "version": "2.35",
+  "architecture": "x86-64",
+  "author": "PandaIDE",
+  "description": "GNU Assembler AT&T syntax variant",
+  "fileExtensions": [".s", ".S"],
+  "extensions": {
+    "directives": [".file", ".section", ".text", ".data", ".globl", ".type", ".size"],
+    "instructions": ["mov", "add", "sub", "xor", "and", "or", "not", "push", "pop", "call", "ret", "jmp", "je", "jg", "jl", "int", "iret"],
+    "registers": ["eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7"],
+    "prefix": "%"
+  },
+  "comment": "#",
+  "string": "\"",
+  "number": "$"
+}

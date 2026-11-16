@@ -1,0 +1,29 @@
+{
+  "name": "VisionSystem",
+  "languages": ["python", "cpp"],
+  "toolchains": {
+    "python": "python3",
+    "cpp": "gcc"
+  },
+  "targets": ["x86_64"],
+  "buildConfigurations": {
+    "default": {
+      "pythonInterpreter": "3.14",
+      "cppCompiler": "gcc",
+      "optimization": "O0",
+      "debugSymbols": true
+    }
+  },
+  "runConfigurations": {
+    "default": {
+      "script": "main.py",
+      "environment": ".venv"
+    }
+  },
+  "debugConfigurations": {
+    "default": {
+      "debugger": "debugpy",
+      "port": 5678
+    }
+  }
+}

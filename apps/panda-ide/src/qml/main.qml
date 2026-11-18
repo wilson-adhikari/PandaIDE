@@ -1,6 +1,8 @@
 import QtQuick
-import QtQuick.Controls
+// Fusion, not the native style: the Windows and macOS native styles ignore the theme's custom backgrounds.
+import QtQuick.Controls.Fusion
 import QtQuick.Layouts
+import QtQuick.Dialogs
 
 // PandaIDE v0.1 - VS Code / JetBrains style workbench.
 // Design system: PandaTheme semantic tokens only (no raw colors),
@@ -14,7 +16,7 @@ ApplicationWindow {
     height: 900
     minimumWidth: 1000
     minimumHeight: 640
-    title: qsTr("PandaIDE v0.1")
+    title: (projectManager.hasProject ? projectManager.projectName + " - " : "") + "PandaIDE " + Qt.application.version
 
     PandaTheme { id: theme }
 
@@ -26,21 +28,26 @@ ApplicationWindow {
         }
     }
 
+    // Tabs are keyed by absolute path; a bare name ("main.cpp") is an unsaved scratch buffer.
     property string currentFile: "main.cpp"
     property string currentLanguage: "cpp"
     property bool internalChange: false
     property bool suppressOnce: false
     property bool sideVisible: true
     property bool panelVisible: true
-    property bool explorerLoading: true
+    property bool quitting: false
     property int errorCount: 0
     property int termLines: 0
-    property var fileNames: ["main.cpp", "main.py", "fast_math.asm"]
-    property var fileLang: ({"main.cpp": "cpp", "main.py": "python", "fast_math.asm": "asm"})
+    property var fileNames: ["main.cpp", "main.py", "hello.asm"]
+    property var dirty: ({})
+    property var projectFiles: []
+    property var gitChanges: []
+    property string gitBranch: ""
+    property bool gitRepo: false
     property var openFiles: ({
         "main.cpp": "#include <iostream>\n\nclass Greeter {\npublic:\n    void hello() {\n        std::cout << \"Hello, PandaIDE\" << std::endl;\n    }\n};\n\nint main() {\n    Greeter g;\n    g.hello();\n    return 0;\n}\n",
         "main.py": "def greet(name):\n    print(f\"Hello, {name}\")\n\n\ndef main():\n    for i in range(3):\n        greet(\"PandaIDE\")\n\n\nif __name__ == \"__main__\":\n    main()\n",
-        "fast_math.asm": "section .text\nglobal _start\n\n_start:\n    mov rax, 1\n    mov rdi, 1\n    syscall\n"
+        "hello.asm": "; Exits with code 42. Run assembles it with NASM and links it with gcc,\n; so main is the entry point on Windows, Linux and macOS.\nglobal main\nglobal _main            ; macOS adds a leading underscore\n\nsection .text\nmain:\n_main:\n    mov eax, 42\n    ret\n"
     })
 
     // ---- editor helpers -------------------------------------------------
@@ -149,9 +156,12 @@ ApplicationWindow {
     }
 
     function switchFile(index) {
+        if (index < 0 || index >= fileNames.length) {
+            return
+        }
         openFiles[currentFile] = editor.text
         currentFile = fileNames[index]
-        currentLanguage = fileLang[currentFile]
+        currentLanguage = languageOf(currentFile)
         internalChange = true
         editor.text = openFiles[currentFile]
         editor.cursorPosition = 0
@@ -195,6 +205,172 @@ ApplicationWindow {
         terminalLog.append(line)
     }
 
+    // ---- files and workspace --------------------------------------------------
+    function languageOf(name) {
+        var ext = name.toLowerCase().split(".").pop()
+        if (ext === "py") return "python"
+        if (["asm", "s", "nasm", "inc"].indexOf(ext) !== -1) return "asm"
+        if (ext === "c") return "c"
+        if (["cpp", "cc", "cxx", "h", "hpp", "hh", "hxx"].indexOf(ext) !== -1) return "cpp"
+        return "text"
+    }
+    function baseName(path) { return path.split(/[\\/]/).pop() }
+    function isScratch(key) { return key.indexOf("/") === -1 && key.indexOf("\\") === -1 }
+    function fileUrl(path) { return "file://" + (path.charAt(0) === "/" ? "" : "/") + path }
+    function relativeName(path) {
+        var root = projectManager.projectPath
+        return root !== "" && path.indexOf(root + "/") === 0 ? path.substring(root.length + 1) : path
+    }
+    function setDirty(key, value) {
+        var d = Object.assign({}, dirty)
+        if (value) d[key] = true; else delete d[key]
+        dirty = d
+    }
+    function dirtyCount() { return Object.keys(dirty).length }
+
+    function goToLine(line) {
+        var lines = editor.text.split("\n")
+        var pos = 0
+        for (var n = 0; n < Math.min(line - 1, lines.length); n++) pos += lines[n].length + 1
+        editor.cursorPosition = pos
+        editor.forceActiveFocus()
+    }
+
+    // Open a file (or switch to its tab) and optionally jump to a line.
+    function openPath(path, line) {
+        var i = fileNames.indexOf(path)
+        if (i === -1) {
+            var text = projectManager.readFile(path)
+            if (text === undefined) {
+                terminalPrint("Cannot open " + path + " (missing, binary, or larger than 4 MB)")
+                return
+            }
+            openFiles[currentFile] = editor.text
+            openFiles[path] = text
+            fileNames = fileNames.concat([path])
+            i = fileNames.length - 1
+        }
+        editorTabs.currentIndex = i
+        if (currentFile !== path) switchFile(i)
+        if (line > 0) goToLine(line)
+    }
+
+    function newFile() {
+        var n = 1
+        while (fileNames.indexOf("untitled-" + n + ".txt") !== -1) n++
+        var key = "untitled-" + n + ".txt"
+        openFiles[currentFile] = editor.text
+        openFiles[key] = ""
+        fileNames = fileNames.concat([key])
+        editorTabs.currentIndex = fileNames.length - 1
+    }
+
+    function saveCurrent() {
+        openFiles[currentFile] = editor.text
+        if (isScratch(currentFile)) {
+            saveDialog.open()
+        } else {
+            writeTab(currentFile, currentFile)
+        }
+    }
+
+    // Write a tab to `path`; a scratch buffer (or Save As) is renamed to the new path.
+    function writeTab(key, path) {
+        if (!projectManager.writeFile(path, openFiles[key])) {
+            terminalPrint("Could not save " + path)
+            return false
+        }
+        if (key !== path) {
+            var i = fileNames.indexOf(key)
+            openFiles[path] = openFiles[key]
+            delete openFiles[key]
+            setDirty(key, false)
+            currentFile = path
+            currentLanguage = languageOf(path)
+            langLabel.text = currentLanguage
+            var names = fileNames.slice()
+            names[i] = path
+            fileNames = names
+            editorTabs.currentIndex = i
+        }
+        setDirty(path, false)
+        terminalPrint("Saved " + path)
+        refreshWorkspace()
+        return true
+    }
+
+    function closeTab(force) {
+        if (!force && dirty[currentFile]) {
+            confirmDialog.ask(qsTr("Discard unsaved changes to %1?").arg(baseName(currentFile)), function() { closeTab(true) })
+            return
+        }
+        if (fileNames.length === 1) newFile()
+        var i = fileNames.indexOf(currentFile)
+        var names = fileNames.slice()
+        names.splice(i, 1)
+        var next = names[Math.min(i, names.length - 1)]
+        setDirty(currentFile, false)
+        delete openFiles[currentFile]
+        // Show the next tab before the model changes, so the closed text is never written into it.
+        internalChange = true
+        currentFile = next
+        currentLanguage = languageOf(next)
+        editor.text = openFiles[next]
+        editor.cursorPosition = 0
+        internalChange = false
+        langLabel.text = currentLanguage
+        fileNames = names
+        editorTabs.currentIndex = names.indexOf(next)
+    }
+
+    function openWorkspace(path) {
+        if (!projectManager.openProject(path)) {
+            terminalPrint("Cannot open folder " + path)
+            return
+        }
+        terminalService.setWorkingDirectory(path)
+        refreshWorkspace()
+        sideTabs.currentIndex = 0
+        sideVisible = true
+    }
+    function refreshWorkspace() {
+        projectFiles = projectManager.listFiles()
+        refreshGit()
+    }
+    function refreshGit() {
+        gitRepo = projectManager.hasProject && projectManager.isGitRepo()
+        gitBranch = gitRepo ? projectManager.gitBranch() : ""
+        gitChanges = gitRepo ? projectManager.gitStatus() : []
+    }
+
+    // gcc/clang/nasm "file:line[:col]: error|warning: message" lines become Problems entries.
+    function collectProblems(t) {
+        var lines = t.split("\n")
+        for (var i = 0; i < lines.length; i++) {
+            var m = lines[i].match(/^(.*?):(\d+):(?:(\d+):)?\s*(fatal error|error|warning):\s*(.*)$/)
+            if (!m) continue
+            var severity = m[4] === "warning" ? "warning" : "error"
+            problemsModel.append({ text: baseName(m[1]) + ":" + m[2] + ": " + m[5], severity: severity, path: m[1], line: parseInt(m[2]) })
+            if (severity === "error") errorCount++
+        }
+        updateProblemsLabel()
+    }
+    function openProblem(path, line) {
+        // Scratch buffers run from a temporary copy; jump to their tab, not the copy.
+        var name = baseName(path)
+        openPath(fileNames.indexOf(path) === -1 && fileNames.indexOf(name) !== -1 ? name : path, line)
+    }
+
+    function startSignIn() {
+        if (!account.configured) {
+            terminalPrint("GitHub sign-in is not set up in this build (see README: GitHub sign-in).")
+            return
+        }
+        signInDialog.code = ""
+        signInDialog.open()
+        account.signIn()
+    }
+
     // Backend output arrives in chunks; keep the log line-oriented
     // and cap the buffer so a runaway process cannot grow it forever.
     function appendOutput(t) {
@@ -219,8 +395,15 @@ ApplicationWindow {
         openFiles[currentFile] = editor.text
         panelVisible = true
         panelTabs.currentIndex = 0
-        terminalPrint("$ run " + currentFile)
-        terminalService.runText(editor.text, currentLanguage, currentFile)
+        problemsModel.clear()
+        errorCount = 0
+        updateProblemsLabel()
+        terminalPrint("$ run " + baseName(currentFile))
+        if (isScratch(currentFile)) {
+            terminalService.runText(editor.text, currentLanguage, currentFile)
+        } else if (!dirty[currentFile] || writeTab(currentFile, currentFile)) {
+            terminalService.runFile(currentFile, currentLanguage) // saved first, so Run uses what is on screen
+        }
     }
 
     function runTerminalCommand(cmd) {
@@ -231,22 +414,12 @@ ApplicationWindow {
         }
         if (c === "help") {
             terminalPrint("a live shell: type anything, e.g. python main.py, g++ --version, dir")
-            terminalPrint("builtins: help, clear  |  demo: fail (sample Problems entry)")
+            terminalPrint("builtins: help, clear")
             return
         }
         if (c === "clear") {
             terminalLog.clear()
             termLines = 0
-            return
-        }
-        if (c === "fail") {
-            terminalPrint("error: use of undeclared identifier 'x'")
-            terminalPrint("Build finished: 1 error")
-            problemsModel.clear()
-            problemsModel.append({ text: "main.cpp:12: use of undeclared identifier 'x'", severity: "error" })
-            problemsModel.append({ text: "main.cpp:9: unused variable 'tmp'", severity: "warning" })
-            errorCount = 1
-            updateProblemsLabel()
             return
         }
         // Forward to the live shell (PowerShell/CMD/bash). `cd`
@@ -284,20 +457,44 @@ ApplicationWindow {
         Menu {
             title: qsTr("&File")
             Action {
-                text: qsTr("&New Project")
+                text: qsTr("&New File")
                 shortcut: "Ctrl+N"
-                onTriggered: projectManager.newProject("Untitled", "")
+                onTriggered: newFile()
             }
             Action {
-                text: qsTr("Open Project...")
+                text: qsTr("&Open File...")
                 shortcut: "Ctrl+O"
-                onTriggered: projectManager.openProject("")
+                onTriggered: openFileDialog.open()
+            }
+            Action {
+                text: qsTr("Open &Folder...")
+                shortcut: "Ctrl+Shift+O"
+                onTriggered: folderDialog.open()
+            }
+            MenuSeparator {}
+            Action {
+                text: qsTr("&Save")
+                shortcut: "Ctrl+S"
+                onTriggered: saveCurrent()
+            }
+            Action {
+                text: qsTr("Save &As...")
+                shortcut: "Ctrl+Shift+S"
+                onTriggered: {
+                    openFiles[currentFile] = editor.text
+                    saveDialog.open()
+                }
+            }
+            Action {
+                text: qsTr("&Close Tab")
+                shortcut: "Ctrl+W"
+                onTriggered: closeTab(false)
             }
             MenuSeparator {}
             Action {
                 text: qsTr("E&xit")
                 shortcut: "Ctrl+Q"
-                onTriggered: Qt.quit()
+                onTriggered: window.close()
             }
         }
         Menu {
@@ -342,17 +539,25 @@ ApplicationWindow {
                 shortcut: "Ctrl+R"
                 onTriggered: runCurrentFile()
             }
+        }
+        Menu {
+            title: qsTr("&Account")
             Action {
-                text: qsTr("&Debug")
-                shortcut: "Ctrl+D"
-                onTriggered: terminalPrint("Debugger attached (demo)")
+                text: account.signedIn ? qsTr("Signed in as @%1").arg(account.login) : qsTr("Sign in with &GitHub...")
+                enabled: !account.signedIn && !account.busy
+                onTriggered: startSignIn()
+            }
+            Action {
+                text: qsTr("Sign &out")
+                enabled: account.signedIn
+                onTriggered: account.signOut()
             }
         }
         Menu {
             title: qsTr("&Help")
             Action {
                 text: qsTr("&About")
-                onTriggered: terminalPrint("PandaIDE v0.1 - word-based suggestions, UACE assembly engine")
+                onTriggered: terminalPrint("PandaIDE " + Qt.application.version + " - free and open source (MIT), https://github.com/wilson-adhikari/PandaIDE")
             }
         }
     }
@@ -376,19 +581,18 @@ ApplicationWindow {
             anchors.leftMargin: theme.s2
             anchors.rightMargin: theme.s2
             spacing: theme.s2
-            ComboBox {
-                id: runConfig
-                model: ["Debug", "Release"]
-                Layout.preferredWidth: 120
-                Accessible.name: qsTr("Run configuration")
+            Button {
+                text: qsTr("Open Folder")
+                onClicked: folderDialog.open()
+            }
+            Button {
+                text: qsTr("Save")
+                enabled: !!dirty[currentFile] || isScratch(currentFile)
+                onClicked: saveCurrent()
             }
             Button {
                 text: qsTr("Run")
                 onClicked: runCurrentFile()
-            }
-            Button {
-                text: qsTr("Debug")
-                onClicked: terminalPrint("Debugger attached (demo)")
             }
             TextField {
                 id: globalSearch
@@ -468,45 +672,38 @@ ApplicationWindow {
                 ColumnLayout {
                     spacing: theme.s2
                     Label { text: qsTr("EXPLORER"); font.bold: true; color: theme.textSecondary; font.pixelSize: theme.fontSmall; leftPadding: theme.s2 }
-                    // Skeleton shimmer while the (demo) project index loads.
-                    ColumnLayout {
-                        visible: explorerLoading
+                    Label {
+                        visible: !projectManager.hasProject
+                        text: qsTr("No folder open. The tabs on the right are unsaved samples.")
+                        color: theme.textMuted
+                        font.pixelSize: theme.fontSmall
+                        wrapMode: Text.WordWrap
                         Layout.fillWidth: true
-                        spacing: theme.s2
-                        Repeater {
-                            model: 6
-                            Rectangle {
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 14
-                                Layout.leftMargin: theme.s2
-                                Layout.rightMargin: theme.s2
-                                radius: theme.radiusSm
-                                color: theme.hover
-                                SequentialAnimation on opacity {
-                                    loops: Animation.Infinite
-                                    NumberAnimation { from: 0.35; to: 0.85; duration: theme.motionShimmer }
-                                    NumberAnimation { from: 0.85; to: 0.35; duration: theme.motionShimmer }
-                                }
-                            }
-                        }
+                        leftPadding: theme.s2
+                        rightPadding: theme.s2
+                    }
+                    Button {
+                        visible: !projectManager.hasProject
+                        text: qsTr("Open Folder...")
+                        Layout.leftMargin: theme.s2
+                        onClicked: folderDialog.open()
                     }
                     ListView {
                         id: fileList
-                        visible: !explorerLoading
+                        visible: projectManager.hasProject
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        model: fileNames
+                        clip: true
+                        model: projectFiles
                         Accessible.name: qsTr("Project files")
                         delegate: ItemDelegate {
                             width: fileList.width
-                            text: modelData
-                            highlighted: ListView.isCurrentItem
-                            onClicked: {
-                                fileList.currentIndex = index
-                                editorTabs.currentIndex = index
-                            }
+                            text: relativeName(modelData)
+                            highlighted: modelData === currentFile
+                            onClicked: openPath(modelData, 0)
                         }
                     }
+                    Item { visible: !projectManager.hasProject; Layout.fillHeight: true }
                     Label { text: qsTr("OUTLINE"); font.bold: true; color: theme.textSecondary; font.pixelSize: theme.fontSmall; leftPadding: theme.s2 }
                     ListView {
                         Layout.fillWidth: true
@@ -536,52 +733,85 @@ ApplicationWindow {
                         Accessible.name: qsTr("Text search")
                         onAccepted: {
                             searchModel.clear()
-                            var q = text.trim().toLowerCase()
+                            var q = text.trim()
+                            searchHint.visible = q === ""
                             if (q === "") {
-                                searchHint.visible = true
-                            } else {
-                                searchHint.visible = false
-                                var hits = 0
-                                for (var i = 0; i < fileNames.length; i++) {
-                                    var body = openFiles[fileNames[i]].toLowerCase()
-                                    if (body.indexOf(q) !== -1) {
-                                        searchModel.append({ text: fileNames[i] + qsTr(": match") })
-                                        hits++
+                                return
+                            }
+                            openFiles[currentFile] = editor.text
+                            var hits = projectManager.hasProject ? projectManager.searchFiles(q) : []
+                            // Unsaved scratch buffers are not on disk; search them here.
+                            for (var i = 0; i < fileNames.length; i++) {
+                                if (!isScratch(fileNames[i])) continue
+                                var lines = openFiles[fileNames[i]].split("\n")
+                                for (var n = 0; n < lines.length; n++) {
+                                    if (lines[n].toLowerCase().indexOf(q.toLowerCase()) !== -1) {
+                                        hits.push({ path: fileNames[i], line: n + 1, text: lines[n].trim() })
                                     }
                                 }
-                                if (hits === 0) {
-                                    searchModel.append({ text: qsTr("No matches for '%1'").arg(text) })
-                                }
+                            }
+                            for (var h = 0; h < hits.length; h++) {
+                                searchModel.append({ path: hits[h].path, line: hits[h].line,
+                                                     text: relativeName(hits[h].path) + ":" + hits[h].line + "  " + hits[h].text })
+                            }
+                            if (hits.length === 0) {
+                                searchModel.append({ path: "", line: 0, text: qsTr("No matches for '%1'").arg(q) })
                             }
                         }
                     }
                     Label {
                         id: searchHint
-                        text: qsTr("Type to search open files")
+                        text: qsTr("Type and press Enter to search the folder")
                         color: theme.textMuted
                         font.pixelSize: theme.fontSmall
                         leftPadding: theme.s2
                     }
                     ListView {
+                        id: searchList
                         Layout.fillWidth: true
                         Layout.fillHeight: true
+                        clip: true
                         model: ListModel { id: searchModel }
                         Accessible.name: qsTr("Search results")
-                        delegate: Label { text: model.text; leftPadding: theme.s2; color: theme.textPrimary }
+                        delegate: ItemDelegate {
+                            width: searchList.width
+                            text: model.text
+                            enabled: model.path !== ""
+                            onClicked: openPath(model.path, model.line)
+                        }
                     }
                 }
                 ColumnLayout {
                     spacing: theme.s2
                     Label { text: qsTr("SOURCE CONTROL"); font.bold: true; color: theme.textSecondary; font.pixelSize: theme.fontSmall; leftPadding: theme.s2 }
+                    Label {
+                        visible: !gitRepo
+                        text: projectManager.hasProject ? qsTr("This folder is not a Git repository.") : qsTr("Open a folder to use Git.")
+                        color: theme.textMuted
+                        font.pixelSize: theme.fontSmall
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                        leftPadding: theme.s2
+                    }
+                    Label {
+                        visible: gitRepo && gitChanges.length === 0
+                        text: qsTr("No changes on %1").arg(gitBranch)
+                        color: theme.textMuted
+                        font.pixelSize: theme.fontSmall
+                        leftPadding: theme.s2
+                    }
                     ListView {
+                        visible: gitRepo
                         Layout.fillWidth: true
                         Layout.fillHeight: true
-                        model: ["M main.cpp", "M main.qml"]
+                        clip: true
+                        model: gitChanges
                         Accessible.name: qsTr("Changed files")
-                        delegate: Label { text: modelData; leftPadding: theme.s2; color: theme.textPrimary }
+                        delegate: Label { text: modelData; leftPadding: theme.s2; color: theme.textPrimary; font.family: theme.codeFont }
                     }
                     TextField {
                         id: commitBox
+                        visible: gitRepo
                         Layout.fillWidth: true
                         Layout.leftMargin: theme.s2
                         Layout.rightMargin: theme.s2
@@ -589,28 +819,42 @@ ApplicationWindow {
                         Accessible.name: qsTr("Commit message")
                     }
                     Button {
-                        text: qsTr("Commit")
+                        visible: gitRepo
+                        text: qsTr("Commit all changes")
+                        enabled: gitChanges.length > 0 && commitBox.text.trim() !== ""
                         Layout.fillWidth: true
                         Layout.leftMargin: theme.s2
                         Layout.rightMargin: theme.s2
                         onClicked: {
-                            terminalPrint("Committed: " + (commitBox.text === "" ? qsTr("(empty message)") : commitBox.text))
+                            if (dirtyCount() > 0) terminalPrint("Note: unsaved editor changes are not included; save first to commit them.")
+                            terminalPrint(projectManager.gitCommit(commitBox.text))
                             commitBox.clear()
+                            refreshGit()
                         }
+                    }
+                    Button {
+                        visible: gitRepo
+                        text: qsTr("Refresh")
+                        Layout.fillWidth: true
+                        Layout.leftMargin: theme.s2
+                        Layout.rightMargin: theme.s2
+                        onClicked: refreshGit()
                     }
                 }
                 ColumnLayout {
                     spacing: theme.s2
-                    Label { text: qsTr("RUN AND DEBUG"); font.bold: true; color: theme.textSecondary; font.pixelSize: theme.fontSmall; leftPadding: theme.s2 }
-                    ComboBox {
+                    Label { text: qsTr("RUN"); font.bold: true; color: theme.textSecondary; font.pixelSize: theme.fontSmall; leftPadding: theme.s2 }
+                    Label {
+                        text: qsTr("Runs the current file: Python, C/C++ (g++ or clang++), or assembly (NASM .asm or GNU .s, linked with gcc).")
+                        color: theme.textMuted
+                        font.pixelSize: theme.fontSmall
+                        wrapMode: Text.WordWrap
                         Layout.fillWidth: true
-                        Layout.leftMargin: theme.s2
-                        Layout.rightMargin: theme.s2
-                        model: ["Debug", "Release"]
-                        Accessible.name: qsTr("Launch configuration")
+                        leftPadding: theme.s2
+                        rightPadding: theme.s2
                     }
                     Button {
-                        text: qsTr("Start")
+                        text: qsTr("Run current file")
                         Layout.fillWidth: true
                         Layout.leftMargin: theme.s2
                         Layout.rightMargin: theme.s2
@@ -643,7 +887,11 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 Repeater {
                     model: fileNames
-                    TabButton { text: modelData; width: implicitWidth + 24 }
+                    TabButton {
+                        text: baseName(modelData) + (dirty[modelData] ? "  ●" : "")
+                        width: implicitWidth + 24
+                        Accessible.name: baseName(modelData) + (dirty[modelData] ? qsTr(", unsaved") : "")
+                    }
                 }
                 onCurrentIndexChanged: switchFile(currentIndex)
             }
@@ -663,6 +911,10 @@ ApplicationWindow {
                 Accessible.description: qsTr("Edit code with word-based suggestions. Tab accepts, Enter keeps indentation.")
                 background: Rectangle { color: theme.editorBackground }
                 onTextChanged: {
+                    // Typed edits differ from the buffer last loaded or saved; switching tabs does not.
+                    if (!dirty[currentFile] && text !== openFiles[currentFile]) {
+                        setDirty(currentFile, true)
+                    }
                     updateCaret()
                     refreshOutline()
                     if (!internalChange) {
@@ -836,7 +1088,10 @@ ApplicationWindow {
                     }
                     Connections {
                         target: terminalService
-                        function onOutputReceived(t) { appendOutput(t) }
+                        function onOutputReceived(t) {
+                            appendOutput(t)
+                            collectProblems(t)
+                        }
                         function onFinished(code) { terminalPrint("[exit " + code + "]") }
                         function onCurrentDirectoryChanged(dir) { dirLabel.text = dir }
                         function onCurrentShellChanged(name) {
@@ -858,16 +1113,22 @@ ApplicationWindow {
                         leftPadding: theme.s2
                     }
                     ListView {
+                        id: problemsList
                         Layout.fillWidth: true
                         Layout.fillHeight: true
+                        clip: true
                         model: ListModel { id: problemsModel }
                         Accessible.name: qsTr("Problems list")
-                        delegate: Label {
-                            text: model.text
-                            leftPadding: theme.s2
-                            color: model.severity === "error" ? theme.error
-                                 : model.severity === "warning" ? theme.warning
-                                 : theme.textSecondary
+                        delegate: ItemDelegate {
+                            width: problemsList.width
+                            onClicked: openProblem(model.path, model.line)
+                            contentItem: Label {
+                                text: model.text
+                                color: model.severity === "error" ? theme.error
+                                     : model.severity === "warning" ? theme.warning
+                                     : theme.textSecondary
+                                elide: Text.ElideRight
+                            }
                         }
                     }
                 }
@@ -894,7 +1155,13 @@ ApplicationWindow {
             anchors.leftMargin: theme.s2
             anchors.rightMargin: theme.s2
             spacing: theme.s3
-            Label { text: "main"; color: theme.textSecondary; font.pixelSize: theme.fontSmall }
+            Label {
+                visible: gitBranch !== ""
+                text: "⎇ " + gitBranch
+                color: theme.textSecondary
+                font.pixelSize: theme.fontSmall
+                Accessible.name: qsTr("Git branch %1").arg(gitBranch)
+            }
             Label {
                 id: problemsLabel
                 text: qsTr("0 problems")
@@ -918,24 +1185,136 @@ ApplicationWindow {
             }
             Label { text: qsTr("Spaces: 4"); color: theme.textSecondary; font.pixelSize: theme.fontSmall }
             Label { text: "UACE " + uace.version; color: theme.textSecondary; font.pixelSize: theme.fontSmall }
+            Image {
+                visible: account.signedIn
+                source: account.avatarUrl
+                sourceSize.width: 16
+                sourceSize.height: 16
+                Layout.preferredWidth: 16
+                Layout.preferredHeight: 16
+            }
+            Button {
+                flat: true
+                text: account.signedIn ? "@" + account.login : qsTr("Sign in with GitHub")
+                font.pixelSize: theme.fontSmall
+                Accessible.name: account.signedIn ? qsTr("GitHub account %1, click to sign out").arg(account.login) : qsTr("Sign in with GitHub")
+                onClicked: account.signedIn ? accountMenu.popup() : startSignIn()
+                Menu {
+                    id: accountMenu
+                    MenuItem { text: qsTr("Sign out"); onTriggered: account.signOut() }
+                }
+            }
         }
     }
 
-    Timer {
-        interval: 900
-        running: true
-        repeat: false
-        onTriggered: explorerLoading = false
+    // ---- dialogs -----------------------------------------------------------
+    FolderDialog {
+        id: folderDialog
+        title: qsTr("Open Folder")
+        onAccepted: openWorkspace(projectManager.localPath(selectedFolder))
+    }
+    FileDialog {
+        id: openFileDialog
+        title: qsTr("Open File")
+        currentFolder: projectManager.hasProject ? fileUrl(projectManager.projectPath) : ""
+        onAccepted: openPath(projectManager.localPath(selectedFile), 0)
+    }
+    FileDialog {
+        id: saveDialog
+        title: qsTr("Save As")
+        fileMode: FileDialog.SaveFile
+        currentFolder: projectManager.hasProject ? fileUrl(projectManager.projectPath) : ""
+        onAccepted: writeTab(currentFile, projectManager.localPath(selectedFile))
+    }
+    Dialog {
+        id: confirmDialog
+        property var onYes: null
+        function ask(message, yes) {
+            confirmText.text = message
+            onYes = yes
+            open()
+        }
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        title: qsTr("Unsaved changes")
+        standardButtons: Dialog.Yes | Dialog.No
+        Label { id: confirmText; wrapMode: Text.WordWrap }
+        onAccepted: if (onYes) onYes()
+    }
+    Dialog {
+        id: signInDialog
+        property string code: ""
+        property string uri: "https://github.com/login/device"
+        anchors.centerIn: Overlay.overlay
+        modal: true
+        title: qsTr("Sign in with GitHub")
+        standardButtons: Dialog.Cancel
+        onRejected: account.cancel()
+        ColumnLayout {
+            spacing: theme.s2
+            Label { text: signInDialog.code === "" ? qsTr("Contacting GitHub...") : qsTr("Enter this code at %1").arg(signInDialog.uri) }
+            TextField {
+                id: codeField
+                visible: signInDialog.code !== ""
+                text: signInDialog.code
+                readOnly: true
+                selectByMouse: true
+                font.family: theme.codeFont
+                font.pixelSize: 22
+                Accessible.name: qsTr("Device code")
+            }
+            RowLayout {
+                visible: signInDialog.code !== ""
+                Button { text: qsTr("Copy code"); onClicked: { codeField.selectAll(); codeField.copy() } }
+                Button { text: qsTr("Open GitHub"); onClicked: Qt.openUrlExternally(signInDialog.uri) }
+            }
+            Label {
+                text: qsTr("PandaIDE only asks to read your public profile.")
+                color: theme.textSecondary
+                font.pixelSize: theme.fontSmall
+            }
+        }
+    }
+    Connections {
+        target: account
+        function onDeviceCodeReady(code, uri) {
+            signInDialog.code = code
+            signInDialog.uri = uri
+        }
+        function onAccountChanged() {
+            if (account.signedIn && signInDialog.visible) {
+                signInDialog.close()
+                terminalPrint("Signed in to GitHub as @" + account.login)
+            }
+        }
+        function onFailed(message) {
+            signInDialog.close()
+            terminalPrint("GitHub sign-in: " + message)
+        }
+    }
+
+    onClosing: function(close) {
+        openFiles[currentFile] = editor.text
+        if (!quitting && dirtyCount() > 0) {
+            close.accepted = false
+            confirmDialog.ask(qsTr("%1 file(s) have unsaved changes. Quit and discard them?").arg(dirtyCount()), function() {
+                quitting = true
+                window.close()
+            })
+        }
     }
 
     Component.onCompleted: {
         langLabel.text = currentLanguage
         dirLabel.text = terminalService.currentDirectory
         shellCombo.model = terminalService.availableShells()
-        shellCombo.currentIndex = shellCombo.indexOfValue(terminalService.currentShell())
+        shellCombo.currentIndex = shellCombo.indexOfValue(terminalService.currentShell)
         updateCaret()
         updateProblemsLabel()
         refreshOutline()
-        console.log("PandaIDE ready")
+        var last = projectManager.lastProject()
+        if (last !== "") {
+            openWorkspace(last)
+        }
     }
 }

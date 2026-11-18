@@ -1,0 +1,145 @@
+# Builds and tests PandaIDE on Windows, macOS and Linux for every push and pull request.
+# Pushing a tag such as v0.2.0 also publishes the three downloads as a GitHub Release.
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  QT_VERSION: "6.8.3"
+  AQT_VERSION: "3.3.0"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, name: windows }
+          - { os: macos-latest, name: macos }
+          - { os: ubuntu-22.04, name: linux }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="dev-${GITHUB_SHA::7}"; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Install Qt and tools (Windows)
+        if: matrix.name == 'windows'
+        run: |
+          pip install "aqtinstall==$AQT_VERSION" ninja
+          aqt install-qt windows desktop "$QT_VERSION" win64_mingw --outputdir "$RUNNER_TEMP/qt"
+          aqt install-tool windows desktop tools_mingw1310 qt.tools.win64_mingw1310 --outputdir "$RUNNER_TEMP/qt"
+          choco install nasm -y --no-progress
+          echo "QT_DIR=$RUNNER_TEMP/qt/$QT_VERSION/mingw_64" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/qt/$QT_VERSION/mingw_64/bin" >> "$GITHUB_PATH"
+          echo "$RUNNER_TEMP/qt/Tools/mingw1310_64/bin" >> "$GITHUB_PATH"
+          echo "C:/Program Files/NASM" >> "$GITHUB_PATH"
+          echo "CMAKE_EXTRA=-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++" >> "$GITHUB_ENV"
+
+      - name: Install Qt and tools (macOS)
+        if: matrix.name == 'macos'
+        run: |
+          pip install "aqtinstall==$AQT_VERSION" ninja
+          aqt install-qt mac desktop "$QT_VERSION" clang_64 --outputdir "$RUNNER_TEMP/qt"
+          brew install nasm
+          echo "QT_DIR=$RUNNER_TEMP/qt/$QT_VERSION/macos" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/qt/$QT_VERSION/macos/bin" >> "$GITHUB_PATH"
+          echo "CMAKE_EXTRA=-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" >> "$GITHUB_ENV"
+
+      - name: Install Qt and tools (Linux)
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-dev libegl1 libfuse2 libxkbcommon-x11-0 libxcb-cursor0 \
+            libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xinerama0 libxcb-xkb1 nasm
+          pip install "aqtinstall==$AQT_VERSION" ninja
+          aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 --outputdir "$RUNNER_TEMP/qt"
+          echo "QT_DIR=$RUNNER_TEMP/qt/$QT_VERSION/gcc_64" >> "$GITHUB_ENV"
+          echo "$RUNNER_TEMP/qt/$QT_VERSION/gcc_64/bin" >> "$GITHUB_PATH"
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$QT_DIR" \
+            -DPANDAIDE_GITHUB_CLIENT_ID="${{ vars.PANDAIDE_GITHUB_CLIENT_ID }}" $CMAKE_EXTRA
+          cmake --build build
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Package (Windows)
+        if: matrix.name == 'windows'
+        run: |
+          mkdir -p dist/PandaIDE
+          cp build/apps/panda-ide/PandaIDE.exe LICENSE README.md dist/PandaIDE/
+          windeployqt --release --no-translations --qmldir apps/panda-ide/src/qml dist/PandaIDE/PandaIDE.exe
+          cd dist && 7z a "../PandaIDE-$VERSION-windows-x64.zip" PandaIDE > /dev/null
+
+      - name: Package (macOS)
+        if: matrix.name == 'macos'
+        run: |
+          mkdir -p dist
+          cp -R build/apps/panda-ide/PandaIDE.app dist/
+          macdeployqt dist/PandaIDE.app -qmldir=apps/panda-ide/src/qml
+          # Ad-hoc signature: macdeployqt edits the binaries, and Apple silicon refuses unsigned code.
+          codesign --force --deep --sign - dist/PandaIDE.app
+          hdiutil create -volname PandaIDE -srcfolder dist/PandaIDE.app -ov -format UDZO "PandaIDE-$VERSION-macos-universal.dmg"
+
+      - name: Package (Linux)
+        if: matrix.name == 'linux'
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          base=https://github.com/linuxdeploy
+          curl -sSLo linuxdeploy "$base/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage"
+          curl -sSLo linuxdeploy-plugin-qt "$base/linuxdeploy-plugin-qt/releases/download/1-alpha-20250213-1/linuxdeploy-plugin-qt-x86_64.AppImage"
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          export QMAKE="$QT_DIR/bin/qmake" QML_SOURCES_PATHS=apps/panda-ide/src/qml
+          export LDAI_OUTPUT="PandaIDE-$VERSION-linux-x86_64.AppImage"
+          ./linuxdeploy --appdir AppDir -e build/apps/panda-ide/PandaIDE \
+            -d packaging/linux/pandaide.desktop -i packaging/linux/pandaide.svg --plugin qt --output appimage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pandaide-${{ matrix.name }}
+          path: |
+            PandaIDE-*.zip
+            PandaIDE-*.dmg
+            PandaIDE-*.AppImage
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "PandaIDE $GITHUB_REF_NAME" --generate-notes

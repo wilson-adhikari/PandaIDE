@@ -47,6 +47,15 @@ public:
                              const QString& language,
                              const QString& fileName);
 
+    // Run a saved file in place (its folder is the working directory,
+    // so imports and includes of neighbouring files work): Python
+    // directly, C/C++ via g++/clang++, assembly via NASM (.asm) or the
+    // GNU assembler (.s), linked by the C compiler with main as entry.
+    Q_INVOKABLE void runFile(const QString& path, const QString& language);
+
+    // Move the live shell to a folder (restarts it there).
+    Q_INVOKABLE void setWorkingDirectory(const QString& dir);
+
     Q_INVOKABLE void stop();
 
     // Hint for the directory label after the user runs `cd` in the
@@ -77,7 +86,12 @@ private:
     };
     static QList<ShellDef> detectShells();
     void startShellProcess(const ShellDef& def);
-    void startProgram(const QString& program, const QStringList& args);
+    struct Step {
+        QString program;
+        QStringList args;
+    };
+    void startProgram(const QString& program, const QStringList& args, const QDir& dir);
+    void runNextStep();
     static QStringList splitCommand(const QString& line);
     static QString findProgram(const QStringList& names);
 
@@ -87,8 +101,9 @@ private:
     bool m_shellStopping = false;
     QDir m_workDir;
     QDir m_runDir;
-    bool m_compileStep = false;
-    QString m_runExe;
+    // Remaining build/run steps of the current Run; each starts only if the previous one succeeded.
+    QList<Step> m_steps;
+    QDir m_stepDir;
 };
 
 } // namespace Terminal

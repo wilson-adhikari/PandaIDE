@@ -10,6 +10,7 @@
 #include "UACE/UACE.h"
 #include "Completion/CompletionEngine.h"
 #include "Terminal/TerminalService.h"
+#include "Account/AccountService.h"
 
 namespace {
 
@@ -42,7 +43,7 @@ int main(int argc, char *argv[])
     // Note: Qt6 enables high-DPI scaling by default; no opt-in attribute needed.
     QApplication::setOrganizationName("PandaIDE");
     QApplication::setApplicationName("PandaIDE");
-    QApplication::setApplicationVersion("0.1");
+    QApplication::setApplicationVersion(QStringLiteral(PANDAIDE_VERSION));
 
     QApplication app(argc, argv);
     applyDarkPalette(app);
@@ -65,22 +66,31 @@ int main(int argc, char *argv[])
     // Real terminal backend (QProcess, no shell wrapper).
     auto* terminalService = new Terminal::TerminalService(registry);
     registry->registerService("terminalService", terminalService);
+    // GitHub sign-in (OAuth device flow).
+    auto* account = new Account::AccountService(registry);
+    registry->registerService("account", account);
 
     // Load QML interface. Each service is exposed both through the
     // "ide" registry object and directly under its own name so the
     // QML in src/qml/main.qml can bind to it.
-    QQmlApplicationEngine engine;
-    engine.rootContext()->setContextProperty("ide", registry);
-    engine.rootContext()->setContextProperty("projectManager", projectManager);
-    engine.rootContext()->setContextProperty("languageProvider", languageProvider);
-    engine.rootContext()->setContextProperty("toolchainManager", toolchainManager);
-    engine.rootContext()->setContextProperty("uace", uace);
-    engine.rootContext()->setContextProperty("completionEngine", completionEngine);
-    engine.rootContext()->setContextProperty("terminalService", terminalService);
+    int code = -1;
+    {
+        QQmlApplicationEngine engine;
+        engine.rootContext()->setContextProperty("ide", registry);
+        engine.rootContext()->setContextProperty("projectManager", projectManager);
+        engine.rootContext()->setContextProperty("languageProvider", languageProvider);
+        engine.rootContext()->setContextProperty("toolchainManager", toolchainManager);
+        engine.rootContext()->setContextProperty("uace", uace);
+        engine.rootContext()->setContextProperty("completionEngine", completionEngine);
+        engine.rootContext()->setContextProperty("terminalService", terminalService);
+        engine.rootContext()->setContextProperty("account", account);
 
-    engine.load(QUrl(QStringLiteral("qrc:/main.qml")));
-    if (engine.rootObjects().isEmpty())
-        return -1;
-
-    return app.exec();
+        engine.load(QUrl(QStringLiteral("qrc:/main.qml")));
+        if (!engine.rootObjects().isEmpty())
+            code = app.exec();
+    }
+    // The QML that uses the services is gone; delete the services while QApplication still exists.
+    // This also ends the terminal's shell, which would otherwise outlive the IDE.
+    registry->clear();
+    return code;
 }

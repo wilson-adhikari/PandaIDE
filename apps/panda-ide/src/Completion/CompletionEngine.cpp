@@ -16,7 +16,7 @@ CompletionEngine::~CompletionEngine()
 
 QStringList CompletionEngine::languages() const
 {
-    return {"cpp", "python", "asm"};
+    return {"cpp", "python", "asm", "rust", "csharp"};
 }
 
 QStringList CompletionEngine::keywordsFor(const QString& language)
@@ -58,6 +58,37 @@ QStringList CompletionEngine::keywordsFor(const QString& language)
             "default", "db", "dw", "dd", "dq",
             "resb", "resw", "resd", "resq", "equ",
             "times", "org", "%macro", "%endmacro"
+        };
+    }
+    if (lang == "rust" || lang == "rs") {
+        return {
+            "as", "async", "await", "break", "const", "continue", "crate",
+            "dyn", "else", "enum", "extern", "false", "fn", "for", "if",
+            "impl", "in", "let", "loop", "match", "mod", "move", "mut",
+            "pub", "ref", "return", "self", "Self", "static", "struct",
+            "super", "trait", "true", "type", "unsafe", "use", "where",
+            "while",
+            // common std items
+            "println!", "print!", "format!", "vec!", "panic!", "assert!",
+            "String", "Vec", "Option", "Some", "None", "Result", "Ok",
+            "Err", "Box", "HashMap", "i32", "i64", "u8", "u32", "u64",
+            "usize", "f64", "bool", "str"
+        };
+    }
+    if (lang == "csharp" || lang == "cs") {
+        return {
+            "abstract", "async", "await", "base", "bool", "break", "case",
+            "catch", "class", "const", "continue", "decimal", "default",
+            "do", "double", "else", "enum", "false", "finally", "float",
+            "for", "foreach", "if", "in", "int", "interface", "internal",
+            "is", "long", "namespace", "new", "null", "out", "override",
+            "private", "protected", "public", "readonly", "record", "ref",
+            "return", "sealed", "static", "string", "struct", "switch",
+            "this", "throw", "true", "try", "using", "var", "virtual",
+            "void", "while",
+            // common library names
+            "Console", "WriteLine", "ReadLine", "List", "Dictionary",
+            "Task", "Math", "String", "DateTime"
         };
     }
     // C++ (also used for plain C files in v0.1)

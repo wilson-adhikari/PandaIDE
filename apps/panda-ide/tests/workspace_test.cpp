@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QProcess>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QSysInfo>
@@ -17,6 +18,15 @@ bool write(const QString& path, const QByteArray& bytes)
     QDir().mkpath(QFileInfo(path).absolutePath());
     QFile f(path);
     return f.open(QIODevice::WriteOnly) && f.write(bytes) == bytes.size();
+}
+int dotnetMajor()
+{
+    QProcess p;
+    p.start(QStringLiteral("dotnet"), {QStringLiteral("--version")});
+    if (!p.waitForFinished(30000) || p.exitCode() != 0) {
+        return 0;
+    }
+    return QString::fromLatin1(p.readAllStandardOutput()).section(QLatin1Char('.'), 0, 0).toInt();
 }
 bool have(const QStringList& programs)
 {
@@ -118,6 +128,42 @@ private slots:
         term.runFile(root + "/notes.txt", QStringLiteral("text"));
         QCOMPARE(finished.count(), 1);
         QCOMPARE(finished.last().at(0).toInt(), 1);
+    }
+
+    // Rust: a lone file is compiled with rustc, then run. Separate tests: first builds can be slow.
+    void runsRust()
+    {
+        if (!have({"rustc"})) {
+            QSKIP("rustc is not installed");
+        }
+        QTemporaryDir tmp;
+        QString output;
+        Terminal::TerminalService term;
+        QSignalSpy finished(&term, &Terminal::TerminalService::finished);
+        connect(&term, &Terminal::TerminalService::outputReceived, this, [&output](const QString& t) { output += t; });
+        QVERIFY(write(tmp.path() + "/hello.rs", "fn main() { println!(\"hello from rust\"); }\n"));
+        term.runFile(tmp.path() + "/hello.rs", QStringLiteral("rust"));
+        QVERIFY(finished.wait(240000));
+        QVERIFY2(finished.last().at(0).toInt() == 0, qPrintable(output));
+        QVERIFY2(output.contains("hello from rust"), qPrintable(output));
+    }
+
+    // C#: a lone .cs file runs as a .NET 10+ file-based app.
+    void runsCSharp()
+    {
+        if (dotnetMajor() < 10) {
+            QSKIP("the .NET 10 SDK is not installed");
+        }
+        QTemporaryDir tmp;
+        QString output;
+        Terminal::TerminalService term;
+        QSignalSpy finished(&term, &Terminal::TerminalService::finished);
+        connect(&term, &Terminal::TerminalService::outputReceived, this, [&output](const QString& t) { output += t; });
+        QVERIFY(write(tmp.path() + "/hello.cs", "System.Console.WriteLine(\"hello from csharp\");\n"));
+        term.runFile(tmp.path() + "/hello.cs", QStringLiteral("csharp"));
+        QVERIFY(finished.wait(280000));
+        QVERIFY2(finished.last().at(0).toInt() == 0, qPrintable(output));
+        QVERIFY2(output.contains("hello from csharp"), qPrintable(output));
     }
 };
 

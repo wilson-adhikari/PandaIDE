@@ -36,6 +36,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      # C# files run as .NET 10 file-based apps (the Rust toolchain is preinstalled on the runners).
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
       - name: Version
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then v="${GITHUB_REF_NAME#v}"; else v="dev-${GITHUB_SHA::7}"; fi

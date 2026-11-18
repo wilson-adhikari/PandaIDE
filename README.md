@@ -1,6 +1,6 @@
 # PandaIDE
 
-PandaIDE is a free, open-source and lightweight IDE for **assembly, C/C++ and Python**. It is built with C++ and Qt 6 and runs on Windows, macOS and Linux.
+PandaIDE is a free, open-source and lightweight IDE for **Python, C/C++, Rust, C# and assembly**. It is built with C++ and Qt 6 and runs on Windows, macOS and Linux.
 
 ## Download (free)
 
@@ -24,6 +24,8 @@ The downloads are not code-signed yet, so the first start needs one extra step:
 - **Run the current file** (**Ctrl+R**). Files run in place, so imports of neighbouring files work. It supports:
   - Python;
   - C and C++, compiled with g++ or clang++;
+  - Rust: `cargo run` inside a Cargo project, otherwise the file is compiled with `rustc`;
+  - C#: a lone `.cs` file runs with `dotnet run file.cs` (.NET 10 or newer), and a folder with a `.csproj` runs as a project;
   - assembly: NASM (`.asm`) or GNU assembler (`.s`) sources are linked with gcc/clang, with `main` as the entry point.
 - **Problems.** Compiler errors and warnings appear in a list; click one to jump to the line.
 - **Terminal.** PowerShell, Command Prompt or Git Bash on Windows; your login shell on macOS and Linux.
@@ -36,6 +38,8 @@ PandaIDE does not bundle compilers. Running code needs the tools for that langua
 
 - Python 3 for Python;
 - gcc, clang or MinGW-w64 for C, C++ and assembly (on Windows, for example from [MSYS2](https://www.msys2.org));
+- Rust from [rustup.rs](https://rustup.rs);
+- the [.NET SDK](https://dot.net), version 10 or newer, for C#;
 - [NASM](https://nasm.us) for `.asm` files.
 
 **Not built yet:** a debugger, the built-in UACE assembler and emulator, and plugins.

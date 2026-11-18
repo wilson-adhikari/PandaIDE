@@ -38,7 +38,8 @@ ApplicationWindow {
     property bool quitting: false
     property int errorCount: 0
     property int termLines: 0
-    property var fileNames: ["main.cpp", "main.py", "hello.asm"]
+    property var fileNames: ["main.cpp", "main.py", "main.rs", "Program.cs", "hello.asm"]
+    property string rustPending: ""
     property var dirty: ({})
     property var projectFiles: []
     property var gitChanges: []
@@ -47,6 +48,8 @@ ApplicationWindow {
     property var openFiles: ({
         "main.cpp": "#include <iostream>\n\nclass Greeter {\npublic:\n    void hello() {\n        std::cout << \"Hello, PandaIDE\" << std::endl;\n    }\n};\n\nint main() {\n    Greeter g;\n    g.hello();\n    return 0;\n}\n",
         "main.py": "def greet(name):\n    print(f\"Hello, {name}\")\n\n\ndef main():\n    for i in range(3):\n        greet(\"PandaIDE\")\n\n\nif __name__ == \"__main__\":\n    main()\n",
+        "main.rs": "fn main() {\n    let name = \"PandaIDE\";\n    for i in 1..=3 {\n        println!(\"Hello {} from Rust ({})\", name, i);\n    }\n}\n",
+        "Program.cs": "// Runs as a .NET 10 file-based app: dotnet run Program.cs\nvar name = \"PandaIDE\";\nfor (var i = 1; i <= 3; i++)\n{\n    Console.WriteLine($\"Hello {name} from C# ({i})\");\n}\n",
         "hello.asm": "; Exits with code 42. Run assembles it with NASM and links it with gcc,\n; so main is the entry point on Windows, Linux and macOS.\nglobal main\nglobal _main            ; macOS adds a leading underscore\n\nsection .text\nmain:\n_main:\n    mov eax, 42\n    ret\n"
     })
 
@@ -203,12 +206,15 @@ ApplicationWindow {
 
     function terminalPrint(line) {
         terminalLog.append(line)
+        terminalLog.cursorPosition = terminalLog.length // keep the newest output in view
     }
 
     // ---- files and workspace --------------------------------------------------
     function languageOf(name) {
         var ext = name.toLowerCase().split(".").pop()
         if (ext === "py") return "python"
+        if (ext === "rs") return "rust"
+        if (ext === "cs") return "csharp"
         if (["asm", "s", "nasm", "inc"].indexOf(ext) !== -1) return "asm"
         if (ext === "c") return "c"
         if (["cpp", "cc", "cxx", "h", "hpp", "hh", "hxx"].indexOf(ext) !== -1) return "cpp"
@@ -343,12 +349,26 @@ ApplicationWindow {
         gitChanges = gitRepo ? projectManager.gitStatus() : []
     }
 
-    // gcc/clang/nasm "file:line[:col]: error|warning: message" lines become Problems entries.
+    // Compiler messages become Problems entries: gcc/clang/nasm "file:line[:col]: error: msg",
+    // C# "file(line,col): error CS0103: msg", and rustc "error[E0425]: msg" followed by " --> file:line:col".
     function collectProblems(t) {
         var lines = t.split("\n")
         for (var i = 0; i < lines.length; i++) {
-            var m = lines[i].match(/^(.*?):(\d+):(?:(\d+):)?\s*(fatal error|error|warning):\s*(.*)$/)
-            if (!m) continue
+            var l = lines[i]
+            var m = l.match(/^(.*?):(\d+):(?:(\d+):)?\s*(fatal error|error|warning):\s*(.*)$/)
+                 || l.match(/^(.*?)\((\d+),(\d+)\):\s*(error|warning) \w+:\s*(.*?)(?:\s*\[[^\]]*\])?$/)
+            if (!m) {
+                var head = l.match(/^(error|warning)(?:\[\w+\])?:\s*(.*)$/)
+                var at = l.match(/^\s*-->\s*(.*?):(\d+):(\d+)/)
+                if (head) {
+                    rustPending = head[1] + "\n" + head[2]
+                } else if (at && rustPending !== "") {
+                    var p = rustPending.split("\n")
+                    m = [l, at[1], at[2], at[3], p[0], p[1]]
+                    rustPending = ""
+                }
+                if (!m) continue
+            }
             var severity = m[4] === "warning" ? "warning" : "error"
             problemsModel.append({ text: baseName(m[1]) + ":" + m[2] + ": " + m[5], severity: severity, path: m[1], line: parseInt(m[2]) })
             if (severity === "error") errorCount++
@@ -591,7 +611,9 @@ ApplicationWindow {
                 onClicked: saveCurrent()
             }
             Button {
-                text: qsTr("Run")
+                text: "▶  " + qsTr("Run %1").arg(({cpp: "C++", c: "C", python: "Python", rust: "Rust", csharp: "C#", asm: "Assembly"})[currentLanguage] || qsTr("file"))
+                highlighted: true
+                Accessible.name: qsTr("Run the current file")
                 onClicked: runCurrentFile()
             }
             TextField {
@@ -658,6 +680,7 @@ ApplicationWindow {
             spacing: 0
             TabBar {
                 id: sideTabs
+                visible: false // the activity rail switches panels; this only keeps the index
                 Layout.fillWidth: true
                 TabButton { text: qsTr("Explorer") }
                 TabButton { text: qsTr("Search") }
@@ -845,7 +868,7 @@ ApplicationWindow {
                     spacing: theme.s2
                     Label { text: qsTr("RUN"); font.bold: true; color: theme.textSecondary; font.pixelSize: theme.fontSmall; leftPadding: theme.s2 }
                     Label {
-                        text: qsTr("Runs the current file: Python, C/C++ (g++ or clang++), or assembly (NASM .asm or GNU .s, linked with gcc).")
+                        text: qsTr("Runs the current file: Python, C/C++ (g++ or clang++), Rust (rustc, or cargo in a Cargo project), C# (dotnet, .NET 10 or newer), or assembly (NASM .asm or GNU .s, linked with gcc).")
                         color: theme.textMuted
                         font.pixelSize: theme.fontSmall
                         wrapMode: Text.WordWrap
@@ -895,10 +918,41 @@ ApplicationWindow {
                 }
                 onCurrentIndexChanged: switchFile(currentIndex)
             }
-            TextArea {
-                id: editor
+            RowLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
+                spacing: 0
+                // Line numbers, scrolled together with the editor.
+                Rectangle {
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: lineNumbers.implicitWidth + 2 * theme.s2
+                    color: theme.editorBackground
+                    clip: true
+                    Text {
+                        id: lineNumbers
+                        x: theme.s2
+                        y: editor.topPadding - editorFlick.contentY
+                        font: editor.font
+                        color: theme.textMuted
+                        horizontalAlignment: Text.AlignRight
+                        Accessible.ignored: true
+                        text: {
+                            var n = []
+                            for (var i = 1; i <= editor.lineCount; i++) n.push(i)
+                            return n.join("\n")
+                        }
+                    }
+                }
+                Flickable {
+                    id: editorFlick
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    ScrollBar.vertical: ScrollBar {}
+                    ScrollBar.horizontal: ScrollBar {}
+            TextArea.flickable: TextArea {
+                id: editor
                 text: openFiles[currentFile]
                 font.family: theme.codeFont
                 font.pixelSize: theme.fontCode
@@ -1020,6 +1074,8 @@ ApplicationWindow {
                     }
                 }
             }
+                }
+            }
             TabBar {
                 id: panelTabs
                 Layout.fillWidth: true
@@ -1028,7 +1084,8 @@ ApplicationWindow {
             }
             StackLayout {
                 Layout.fillWidth: true
-                Layout.preferredHeight: panelVisible ? 170 : 0
+                Layout.preferredHeight: panelVisible ? 200 : 0
+                Layout.fillHeight: false // nested layouts fill by default; the editor gets the spare height
                 visible: panelVisible
                 currentIndex: panelTabs.currentIndex
                 ColumnLayout {
@@ -1063,10 +1120,11 @@ ApplicationWindow {
                             onClicked: terminalService.stop()
                         }
                     }
-                    TextArea {
-                        id: terminalLog
+                    ScrollView {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
+                    TextArea {
+                        id: terminalLog
                         readOnly: true
                         font.family: theme.codeFont
                         font.pixelSize: theme.fontCode - 1
@@ -1074,6 +1132,7 @@ ApplicationWindow {
                         text: "PandaIDE terminal - type 'help'\n"
                         Accessible.name: qsTr("Terminal output")
                         background: Rectangle { color: theme.background }
+                    }
                     }
                     TextField {
                         id: terminalInput

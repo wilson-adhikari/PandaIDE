@@ -366,6 +366,32 @@ void TerminalService::runFile(const QString& path, const QString& language)
             return fail(QStringLiteral("no C++ compiler (g++/clang++) found in PATH"));
         }
         m_steps << Step{compiler, {file, QStringLiteral("-o"), exe}} << Step{exe, {}};
+    } else if (lang == "rust" || lang == "rs") {
+        // Inside a Cargo project, cargo builds the whole crate; a lone file is compiled with rustc.
+        const QString crate = projectRootWith(info.dir(), QStringLiteral("Cargo.toml"));
+        if (!crate.isEmpty()) {
+            const QString cargo = findProgram({"cargo"});
+            if (cargo.isEmpty()) {
+                return fail(QStringLiteral("cargo not found in PATH. Install Rust from https://rustup.rs"));
+            }
+            m_stepDir = QDir(crate);
+            m_steps << Step{cargo, {QStringLiteral("run"), QStringLiteral("--quiet")}};
+        } else {
+            const QString rustc = findProgram({"rustc"});
+            if (rustc.isEmpty()) {
+                return fail(QStringLiteral("rustc not found in PATH. Install Rust from https://rustup.rs"));
+            }
+            m_steps << Step{rustc, {file, QStringLiteral("-o"), exe}} << Step{exe, {}};
+        }
+    } else if (lang == "csharp" || lang == "cs") {
+        // A .csproj nearby is run as a project; a lone .cs file runs as a .NET 10+ file-based app.
+        const QString dotnet = findProgram({"dotnet"});
+        if (dotnet.isEmpty()) {
+            return fail(QStringLiteral("dotnet not found in PATH. Install the .NET SDK (version 10 or newer) from https://dot.net"));
+        }
+        const QString project = projectRootWith(info.dir(), QStringLiteral("*.csproj"));
+        m_steps << Step{dotnet, project.isEmpty() ? QStringList{QStringLiteral("run"), file}
+                                                  : QStringList{QStringLiteral("run"), QStringLiteral("--project"), project}};
     } else if (lang == "asm") {
         // The C compiler links the program (and assembles GNU .s files itself), so `main` is the entry point.
         const QString cc = findProgram({"gcc", "clang", "cc"});
@@ -399,9 +425,23 @@ void TerminalService::runFile(const QString& path, const QString& language)
         }
         m_steps << Step{exe, {}};
     } else {
-        return fail(QStringLiteral("Run supports Python, C, C++ and assembly (.asm with NASM, .s with the GNU assembler)"));
+        return fail(QStringLiteral("Run supports Python, C, C++, Rust, C# and assembly (.asm with NASM, .s with the GNU assembler)"));
     }
     runNextStep();
+}
+
+QString TerminalService::projectRootWith(QDir dir, const QString& pattern)
+{
+    // The nearest folder (this one or up to five above it) that holds a matching project file.
+    for (int level = 0; level < 6; ++level) {
+        if (!dir.entryList({pattern}, QDir::Files).isEmpty()) {
+            return dir.absolutePath();
+        }
+        if (!dir.cdUp()) {
+            break;
+        }
+    }
+    return {};
 }
 
 void TerminalService::runNextStep()

@@ -92,6 +92,7 @@ private:
     };
     void startProgram(const QString& program, const QStringList& args, const QDir& dir);
     void runNextStep();
+    static QString projectRootWith(QDir dir, const QString& pattern);
     static QStringList splitCommand(const QString& line);
     static QString findProgram(const QStringList& names);
 

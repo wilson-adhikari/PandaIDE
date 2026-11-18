@@ -390,8 +390,10 @@ void TerminalService::runFile(const QString& path, const QString& language)
             return fail(QStringLiteral("dotnet not found in PATH. Install the .NET SDK (version 10 or newer) from https://dot.net"));
         }
         const QString project = projectRootWith(info.dir(), QStringLiteral("*.csproj"));
-        m_steps << Step{dotnet, project.isEmpty() ? QStringList{QStringLiteral("run"), file}
-                                                  : QStringList{QStringLiteral("run"), QStringLiteral("--project"), project}};
+        // A broken NuGet source on the machine (e.g. a removed offline folder) must not stop a program that needs no packages.
+        const QString ignoreBroken = QStringLiteral("--property:RestoreIgnoreFailedSources=true");
+        m_steps << Step{dotnet, project.isEmpty() ? QStringList{QStringLiteral("run"), file, ignoreBroken}
+                                                  : QStringList{QStringLiteral("run"), QStringLiteral("--project"), project, ignoreBroken}};
     } else if (lang == "asm") {
         // The C compiler links the program (and assembles GNU .s files itself), so `main` is the entry point.
         const QString cc = findProgram({"gcc", "clang", "cc"});

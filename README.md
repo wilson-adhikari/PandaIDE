@@ -25,7 +25,7 @@ The downloads are not code-signed yet, so the first start needs one extra step:
   - Python;
   - C and C++, compiled with g++ or clang++;
   - Rust: `cargo run` inside a Cargo project, otherwise the file is compiled with `rustc`;
-  - C# (experimental): a lone `.cs` file runs with `dotnet run file.cs` (.NET 10 or newer), and a folder with a `.csproj` runs as a project. This is not yet verified on our build machines, where .NET's package restore fails before the program starts;
+  - C#: a lone `.cs` file runs with `dotnet run file.cs` (.NET 10 or newer), and a folder with a `.csproj` runs as a project. A broken NuGet package source on the machine is skipped, because a single file needs no packages;
   - assembly: NASM (`.asm`) or GNU assembler (`.s`) sources are linked with gcc/clang, with `main` as the entry point.
 - **Problems.** Compiler errors and warnings appear in a list; click one to jump to the line.
 - **Terminal.** PowerShell, Command Prompt or Git Bash on Windows; your login shell on macOS and Linux.

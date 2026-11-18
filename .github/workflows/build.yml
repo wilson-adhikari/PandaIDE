@@ -15,6 +15,10 @@ permissions:
 env:
   QT_VERSION: "6.8.3"
   AQT_VERSION: "3.3.0"
+  # .NET's first-run setup can make the first NuGet restore fail on fresh runners (MSB4181).
+  DOTNET_NOLOGO: "1"
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
 
 jobs:
   build:

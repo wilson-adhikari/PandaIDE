@@ -4,7 +4,7 @@ name: Build and release
 
 on:
   push:
-    branches: [main]
+    branches: [main, "ci/**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
@@ -130,6 +130,18 @@ jobs:
           export LDAI_OUTPUT="PandaIDE-$VERSION-linux-x86_64.AppImage"
           ./linuxdeploy --appdir AppDir -e build/apps/panda-ide/PandaIDE \
             -d packaging/linux/pandaide.desktop -i packaging/linux/pandaide.svg --plugin qt --output appimage
+
+      # The packaged download (not the build tree) must start and keep running: catches missing Qt plugins.
+      - name: Smoke-test the package
+        run: |
+          case "${{ matrix.name }}" in
+            windows) PATH="/c/Windows/system32:/c/Windows" dist/PandaIDE/PandaIDE.exe & ;;
+            macos)   dist/PandaIDE.app/Contents/MacOS/PandaIDE & ;;
+            linux)   sudo apt-get install -y xvfb > /dev/null
+                     APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a ./PandaIDE-*.AppImage & ;;
+          esac
+          sleep 20
+          if [ "${{ matrix.name }}" = windows ]; then tasklist | grep -i PandaIDE.exe; else pgrep -fl PandaIDE; fi
 
       - uses: actions/upload-artifact@v4
         with:

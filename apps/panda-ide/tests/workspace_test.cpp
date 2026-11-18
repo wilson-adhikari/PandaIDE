@@ -154,10 +154,10 @@ private slots:
         if (dotnetMajor() < 10) {
             QSKIP("the .NET 10 SDK is not installed");
         }
-        // shortcut: on GitHub runners (SDK 11.0.100) the NuGet restore of file-based apps fails with MSB4181
-        // before any of our code matters; re-enable in CI once a runner SDK restores cleanly.
+        // shortcut: passes on Windows with the .NET 10 SDK, but GitHub runners still fail the restore (MSB4181)
+        // even with RestoreIgnoreFailedSources; re-enable in CI once that runner issue is understood.
         if (qEnvironmentVariableIsSet("CI")) {
-            QSKIP("dotnet file-based apps fail NuGet restore (MSB4181) on the CI runners");
+            QSKIP("dotnet restore fails on the CI runners (MSB4181)");
         }
         QTemporaryDir tmp;
         QString output;

@@ -40,6 +40,9 @@ TerminalService::TerminalService(QObject* parent)
 
 TerminalService::~TerminalService()
 {
+    // Quietly: without this, killing the shell runs onShellFinished, which emits from a dying object and starts a new shell.
+    m_shell.disconnect(this);
+    m_process.disconnect(this);
     if (m_shell.state() != QProcess::NotRunning) {
         m_shell.kill();
         m_shell.waitForFinished(1000);
@@ -60,7 +63,18 @@ QList<TerminalService::ShellDef> TerminalService::detectShells()
         }
         return !QStandardPaths::findExecutable(program).isEmpty();
     };
-    // Preferred order: modern PowerShell, classic PowerShell,
+#ifndef Q_OS_WIN
+    // macOS and Linux: the user's login shell first, then the common ones (read from stdin, no TTY needed).
+    QStringList seen;
+    for (const QString& sh : {qEnvironmentVariable("SHELL"), QStringLiteral("zsh"), QStringLiteral("bash"), QStringLiteral("sh")}) {
+        const QString path = sh.isEmpty() ? QString() : QStandardPaths::findExecutable(sh);
+        if (!path.isEmpty() && !seen.contains(path)) {
+            seen << path;
+            shells << ShellDef{QFileInfo(path).fileName(), path, {}};
+        }
+    }
+#endif
+    // Preferred order on Windows: modern PowerShell, classic PowerShell,
     // Command Prompt, then Unix shells when installed.
     if (have(QStringLiteral("pwsh"))) {
         shells << ShellDef{QStringLiteral("pwsh"),
@@ -186,7 +200,7 @@ void TerminalService::stop()
         stopped = true;
     }
     if (m_process.state() != QProcess::NotRunning) {
-        m_compileStep = false;
+        m_steps.clear();
         m_process.kill();
         stopped = true;
     }
@@ -261,9 +275,10 @@ QString TerminalService::findProgram(const QStringList& names)
 }
 
 void TerminalService::startProgram(const QString& program,
-                                   const QStringList& args)
+                                   const QStringList& args,
+                                   const QDir& dir)
 {
-    m_process.setWorkingDirectory(m_workDir.absolutePath());
+    m_process.setWorkingDirectory(dir.absolutePath());
     m_process.setProgram(program);
     m_process.setArguments(args);
     m_process.start();
@@ -276,7 +291,7 @@ void TerminalService::execute(const QString& commandLine)
         m_process.waitForFinished(1000);
         emit outputReceived(QStringLiteral("(previous process terminated)"));
     }
-    m_compileStep = false;
+    m_steps.clear();
 
     const QStringList parts = splitCommand(commandLine.trimmed());
     if (parts.isEmpty()) {
@@ -286,7 +301,7 @@ void TerminalService::execute(const QString& commandLine)
         noteCd(parts.size() > 1 ? parts.at(1) : QString());
         return;
     }
-    startProgram(parts.first(), parts.mid(1));
+    startProgram(parts.first(), parts.mid(1), m_workDir);
 }
 
 void TerminalService::runText(const QString& text,
@@ -309,43 +324,143 @@ void TerminalService::runText(const QString& text,
         QTextStream out(&file);
         out << text;
     }
+    runFile(filePath, language);
+}
+
+void TerminalService::runFile(const QString& path, const QString& language)
+{
+    const QFileInfo info(path);
+    if (!info.isFile()) {
+        emit outputReceived(QStringLiteral("error: file not found: ") + path);
+        emit finished(1);
+        return;
+    }
+    if (m_process.state() != QProcess::NotRunning) {
+        m_process.kill();
+        m_process.waitForFinished(1000);
+    }
+    m_steps.clear();
+    m_stepDir = info.dir();
+    const QString file = info.absoluteFilePath();
+    // Build output goes to the scratch folder, never next to the user's sources.
+#ifdef Q_OS_WIN
+    const QString exe = m_runDir.filePath(info.completeBaseName() + QStringLiteral(".exe"));
+#else
+    const QString exe = m_runDir.filePath(info.completeBaseName());
+#endif
+    auto fail = [this](const QString& why) {
+        emit outputReceived(QStringLiteral("error: ") + why);
+        emit finished(1);
+    };
 
     const QString lang = language.toLower();
     if (lang == "python" || lang == "py") {
         const QString python = findProgram({"python", "python3"});
         if (python.isEmpty()) {
-            emit outputReceived(
-                QStringLiteral("error: no Python interpreter found in PATH"));
-            emit finished(1);
-            return;
+            return fail(QStringLiteral("no Python interpreter found in PATH"));
         }
-        startProgram(python, {filePath});
-        return;
-    }
-    if (lang == "cpp" || lang == "c" || lang == "cc" || lang == "cxx") {
+        m_steps << Step{python, {file}};
+    } else if (lang == "cpp" || lang == "c" || lang == "cc" || lang == "cxx") {
         const QString compiler = findProgram({"g++", "clang++"});
         if (compiler.isEmpty()) {
-            emit outputReceived(
-                QStringLiteral("error: no C++ compiler (g++/clang++) found in PATH"));
-            emit finished(1);
-            return;
+            return fail(QStringLiteral("no C++ compiler (g++/clang++) found in PATH"));
         }
-#ifdef Q_OS_WIN
-        const QString exe = m_runDir.filePath(
-            QFileInfo(safeName).completeBaseName() + QStringLiteral(".exe"));
+        m_steps << Step{compiler, {file, QStringLiteral("-o"), exe}} << Step{exe, {}};
+    } else if (lang == "rust" || lang == "rs") {
+        // Inside a Cargo project, cargo builds the whole crate; a lone file is compiled with rustc.
+        const QString crate = projectRootWith(info.dir(), QStringLiteral("Cargo.toml"));
+        if (!crate.isEmpty()) {
+            const QString cargo = findProgram({"cargo"});
+            if (cargo.isEmpty()) {
+                return fail(QStringLiteral("cargo not found in PATH. Install Rust from https://rustup.rs"));
+            }
+            m_stepDir = QDir(crate);
+            m_steps << Step{cargo, {QStringLiteral("run"), QStringLiteral("--quiet")}};
+        } else {
+            const QString rustc = findProgram({"rustc"});
+            if (rustc.isEmpty()) {
+                return fail(QStringLiteral("rustc not found in PATH. Install Rust from https://rustup.rs"));
+            }
+            m_steps << Step{rustc, {file, QStringLiteral("-o"), exe}} << Step{exe, {}};
+        }
+    } else if (lang == "csharp" || lang == "cs") {
+        // A .csproj nearby is run as a project; a lone .cs file runs as a .NET 10+ file-based app.
+        const QString dotnet = findProgram({"dotnet"});
+        if (dotnet.isEmpty()) {
+            return fail(QStringLiteral("dotnet not found in PATH. Install the .NET SDK (version 10 or newer) from https://dot.net"));
+        }
+        const QString project = projectRootWith(info.dir(), QStringLiteral("*.csproj"));
+        m_steps << Step{dotnet, project.isEmpty() ? QStringList{QStringLiteral("run"), file}
+                                                  : QStringList{QStringLiteral("run"), QStringLiteral("--project"), project}};
+    } else if (lang == "asm") {
+        // The C compiler links the program (and assembles GNU .s files itself), so `main` is the entry point.
+        const QString cc = findProgram({"gcc", "clang", "cc"});
+        if (cc.isEmpty()) {
+            return fail(QStringLiteral("no C compiler (gcc/clang) found in PATH; it links assembly programs"));
+        }
+        if (info.suffix().compare(QStringLiteral("s"), Qt::CaseInsensitive) == 0) {
+            m_steps << Step{cc, {file, QStringLiteral("-o"), exe}};
+        } else {
+            const QString nasm = findProgram({"nasm"});
+            if (nasm.isEmpty()) {
+                return fail(QStringLiteral("NASM not found in PATH. Install it (https://nasm.us, "
+                                           "'brew install nasm' or 'sudo apt install nasm'), "
+                                           "or save GNU-syntax code as a .s file"));
+            }
+            const QString obj = exe + QStringLiteral(".o");
+#if defined(Q_OS_WIN)
+            const QString format = QStringLiteral("win64");
+            const QStringList link{obj, QStringLiteral("-o"), exe};
+#elif defined(Q_OS_MACOS)
+            const QString format = QStringLiteral("macho64");
+            // x86-64 code: link it as x86-64 (Apple silicon runs it under Rosetta).
+            const QStringList link{QStringLiteral("-arch"), QStringLiteral("x86_64"), obj, QStringLiteral("-o"), exe};
 #else
-        const QString exe = m_runDir.filePath(
-            QFileInfo(safeName).completeBaseName());
+            const QString format = QStringLiteral("elf64");
+            // NASM code often uses absolute addresses, which position-independent executables reject.
+            const QStringList link{QStringLiteral("-no-pie"), obj, QStringLiteral("-o"), exe};
 #endif
-        m_compileStep = true;
-        m_runExe = exe;
-        startProgram(compiler, {filePath, QStringLiteral("-o"), exe});
+            m_steps << Step{nasm, {QStringLiteral("-f"), format, file, QStringLiteral("-o"), obj}}
+                    << Step{cc, link};
+        }
+        m_steps << Step{exe, {}};
+    } else {
+        return fail(QStringLiteral("Run supports Python, C, C++, Rust, C# and assembly (.asm with NASM, .s with the GNU assembler)"));
+    }
+    runNextStep();
+}
+
+QString TerminalService::projectRootWith(QDir dir, const QString& pattern)
+{
+    // The nearest folder (this one or up to five above it) that holds a matching project file.
+    for (int level = 0; level < 6; ++level) {
+        if (!dir.entryList({pattern}, QDir::Files).isEmpty()) {
+            return dir.absolutePath();
+        }
+        if (!dir.cdUp()) {
+            break;
+        }
+    }
+    return {};
+}
+
+void TerminalService::runNextStep()
+{
+    const Step step = m_steps.takeFirst();
+    startProgram(step.program, step.args, m_stepDir);
+}
+
+void TerminalService::setWorkingDirectory(const QString& dir)
+{
+    const QDir target(dir);
+    if (dir.isEmpty() || !target.exists()) {
         return;
     }
-    emit outputReceived(
-        QStringLiteral("Assembly runs through the UACE build pipeline; "
-                       "use Build for .asm files (demo)."));
-    emit finished(0);
+    m_workDir = target;
+    emit currentDirectoryChanged(currentDirectory());
+    if (!m_shellDef.program.isEmpty()) {
+        startShellProcess(m_shellDef);
+    }
 }
 
 void TerminalService::onShellReadyRead()
@@ -389,21 +504,20 @@ void TerminalService::onReadyRead()
     }
 }
 
-void TerminalService::onFinished(int exitCode, QProcess::ExitStatus /*status*/)
+void TerminalService::onFinished(int exitCode, QProcess::ExitStatus status)
 {
-    if (m_compileStep) {
-        m_compileStep = false;
-        if (exitCode == 0) {
-            startProgram(m_runExe, {});
-            return;
-        }
+    if (exitCode == 0 && status == QProcess::NormalExit && !m_steps.isEmpty()) {
+        runNextStep();
+        return;
     }
+    m_steps.clear();
     emit finished(exitCode);
 }
 
 void TerminalService::onError(QProcess::ProcessError error)
 {
     if (error == QProcess::FailedToStart) {
+        m_steps.clear();
         emit outputReceived(
             QStringLiteral("error: cannot start process (not found or not executable)"));
         emit finished(1);

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=PandaIDE
+Comment=Lightweight IDE for assembly, C/C++ and Python
+Exec=PandaIDE
+Icon=pandaide
+Categories=Development;IDE;
+Terminal=false

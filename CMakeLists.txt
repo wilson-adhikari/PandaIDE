@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(PandaIDE VERSION 0.1 LANGUAGES C CXX)
+project(PandaIDE VERSION 0.2.0 LANGUAGES C CXX)
 
 # ============================================================
 # PandaIDE Open-Source Project - User Configuration
@@ -15,6 +15,8 @@ project(PandaIDE VERSION 0.1 LANGUAGES C CXX)
 #
 # Default v0.1 build enables core functionality.
 # ============================================================
+
+enable_testing()
 
 # Global C++ standard (Qt6 requires C++17 or newer)
 set(CMAKE_CXX_STANDARD 17)
